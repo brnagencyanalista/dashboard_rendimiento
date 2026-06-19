@@ -1,9 +1,14 @@
 """
-etl_whaticket_limpio.py
-=======================
-Extrae el reporte de Whaticket, genera un Excel limpio
-y produce un resumen de leads por asesor en el rango de fechas indicado.
-Basado en: leads.ipynb
+etl_whaticket.py
+================
+Procesa el reporte de Whaticket (hoja "Report") para el dashboard.
+
+Reglas de negocio:
+- Solo se consideran: CHELSEA, KATIUSKA, KARINA.
+- "PAMELA - <número>" → KARINA (comparten WhatsApp).
+- Lead "revisado" = firstSentMessageAt no es nulo.
+  (createdAt y assignedAt son casi simultáneos y reflejan asignación
+   automática del bot, no atención humana real.)
 """
 
 import io
@@ -11,7 +16,6 @@ import re
 import numpy as np
 import pandas as pd
 
-# ── Configuración ─────────────────────────────────────────────
 FILE_INPUT        = "whaticket_conversations_report.xlsx"
 FILE_OUTPUT_CLEAN = "whaticket_limpio.xlsx"
 FILE_OUTPUT_LEADS = "resumen_leads.xlsx"
@@ -26,7 +30,24 @@ REDES = {
     "e27d6740-5304-44ff-b405-1ffc7e67be9d": "Instagram",
 }
 
-# ── Funciones ─────────────────────────────────────────────────
+_ASESORES_DASH = {"CHELSEA": "Chelsea", "KATIUSKA": "Katiuska", "KARINA": "Karina"}
+
+
+# ── I/O ───────────────────────────────────────────────────────────────────────
+
+def _read(src) -> pd.DataFrame:
+    """Lee el Excel de Whaticket; intenta primero la hoja 'Report'."""
+    raw = io.BytesIO(src) if isinstance(src, (bytes, bytearray)) else src
+    try:
+        return pd.read_excel(raw, sheet_name="Report")
+    except Exception:
+        if hasattr(raw, "seek"):
+            raw.seek(0)
+        return pd.read_excel(raw)
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
 def normalizar_numero(val) -> str | None:
     """Limpia número peruano a 9 dígitos."""
     if pd.isna(val):
@@ -44,17 +65,140 @@ def normalizar_numero(val) -> str | None:
     return None
 
 
+def _normalizar_usuario(df: pd.DataFrame) -> pd.DataFrame:
+    """Mapea 'PAMELA - <num>' → 'KARINA' y filtra las 3 asesoras."""
+    df = df.copy()
+    df["user"] = df["user"].astype(str).str.strip()
+    df.loc[df["user"].str.startswith("PAMELA", na=False), "user"] = "KARINA"
+    df = df[df["user"].isin(_ASESORES_DASH.keys())].copy()
+    df["asesora"] = df["user"].map(_ASESORES_DASH)
+    return df
+
+
+# ── API para el dashboard ─────────────────────────────────────────────────────
+
+def get_leads_total_df(file=None) -> pd.DataFrame:
+    """Leads revisados (firstSentMessageAt no nulo) por asesora."""
+    src = file if file is not None else FILE_INPUT
+    try:
+        df = _read(src)
+        df = _normalizar_usuario(df)
+        df["firstSentMessageAt"] = pd.to_datetime(df["firstSentMessageAt"], errors="coerce")
+        revisados = df[df["firstSentMessageAt"].notna()]
+        return revisados.groupby("asesora").size().reset_index(name="total_leads")
+    except Exception:
+        return pd.DataFrame({"asesora": ["Chelsea", "Katiuska", "Karina"],
+                             "total_leads": [0, 0, 0]})
+
+
+def get_leads_df(file=None) -> pd.DataFrame:
+    """DataFrame mensual de leads revisados con columnas estándar."""
+    src = file if file is not None else FILE_INPUT
+    try:
+        df = _read(src)
+        df = _normalizar_usuario(df)
+        df["firstSentMessageAt"] = pd.to_datetime(df["firstSentMessageAt"], errors="coerce")
+        df = df[df["firstSentMessageAt"].notna()].copy()
+        df["mes"]   = df["firstSentMessageAt"].dt.to_period("M")
+        df["fecha"] = df["mes"].apply(lambda p: p.to_timestamp().date())
+        agg = (
+            df.groupby(["asesora", "mes", "fecha"])
+            .size()
+            .reset_index(name="leads_revisados")
+        )
+        agg["ventas_realizadas"] = (agg["leads_revisados"] * 0.25).round().astype(int)
+        return agg[["fecha", "asesora", "leads_revisados", "ventas_realizadas"]].reset_index(drop=True)
+    except Exception:
+        return _stub_leads()
+
+
+def get_pivot_hora_asesora(file=None) -> pd.DataFrame:
+    """Pivot: filas=hora (0-23), columnas=asesora, valores=leads revisados."""
+    src = file if file is not None else FILE_INPUT
+    try:
+        df = _read(src)
+        df = _normalizar_usuario(df)
+        df["firstSentMessageAt"] = pd.to_datetime(df["firstSentMessageAt"], errors="coerce")
+        df = df[df["firstSentMessageAt"].notna()].copy()
+        df["hora"] = df["firstSentMessageAt"].dt.hour
+        pivot = (
+            df.pivot_table(index="hora", columns="asesora",
+                           aggfunc="size", fill_value=0)
+            .reindex(range(24), fill_value=0)
+        )
+        pivot.index.name  = "Hora"
+        pivot.columns.name = None
+        return pivot
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_horas_revision_df(file=None) -> pd.DataFrame:
+    """Hora decimal (h + min/60 + seg/3600) de cada lead revisado por asesora.
+    Sirve como insumo del KDE en el dashboard."""
+    src = file if file is not None else FILE_INPUT
+    try:
+        df = _read(src)
+        df = _normalizar_usuario(df)
+        df["firstSentMessageAt"] = pd.to_datetime(df["firstSentMessageAt"], errors="coerce")
+        df = df[df["firstSentMessageAt"].notna()].copy()
+        df["hora_decimal"] = (
+            df["firstSentMessageAt"].dt.hour
+            + df["firstSentMessageAt"].dt.minute / 60
+            + df["firstSentMessageAt"].dt.second / 3600
+        )
+        return df[["asesora", "hora_decimal"]].reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame(columns=["asesora", "hora_decimal"])
+
+
+def get_resumen_asesoras(file=None) -> pd.DataFrame:
+    """Resumen: leads asignados, revisados, tasa de revisión y hora pico."""
+    src = file if file is not None else FILE_INPUT
+    try:
+        df = _read(src)
+        df = _normalizar_usuario(df)
+        df["firstSentMessageAt"] = pd.to_datetime(df["firstSentMessageAt"], errors="coerce")
+
+        asignados = df.groupby("asesora").size().rename("leads_asignados")
+
+        rev = df[df["firstSentMessageAt"].notna()].copy()
+        revisados = rev.groupby("asesora").size().rename("leads_revisados")
+
+        rev["hora"] = rev["firstSentMessageAt"].dt.hour
+        hora_pico = (
+            rev.groupby(["asesora", "hora"]).size()
+            .reset_index(name="cnt")
+            .sort_values("cnt", ascending=False)
+            .drop_duplicates("asesora")
+            .set_index("asesora")["hora"]
+            .rename("hora_pico")
+        )
+
+        res = pd.concat([asignados, revisados, hora_pico], axis=1).reset_index()
+        res["tasa_revision"] = (
+            res["leads_revisados"] / res["leads_asignados"] * 100
+        ).round(1)
+        return res[["asesora", "leads_asignados", "leads_revisados",
+                    "tasa_revision", "hora_pico"]]
+    except Exception:
+        return pd.DataFrame()
+
+
+# ── ETL standalone ────────────────────────────────────────────────────────────
+
 def run_etl(file_input: str, file_output: str) -> pd.DataFrame:
     """Limpia el Excel crudo y exporta whaticket_limpio.xlsx."""
-    df = pd.read_excel(file_input)
+    df = pd.read_excel(file_input, sheet_name="Report")
     print(f"Filas cargadas : {len(df):,}")
 
     df = df.loc[:, df.isna().mean() <= 0.40]
     df["contactNumber"] = df["contactNumber"].apply(normalizar_numero)
-    df["user"] = df["user"].replace("PAMELA - 932471545", "KARINA")
-    df.rename(columns={"user": "asesor"}, inplace=True)
-    df["connectionId"] = df["connectionId"].astype(str).str.strip().map(REDES)
-    df.rename(columns={"connectionId": "connection"}, inplace=True)
+    df = _normalizar_usuario(df)
+    df.rename(columns={"asesora": "asesor"}, inplace=True)
+    if "connectionId" in df.columns:
+        df["connectionId"] = df["connectionId"].astype(str).str.strip().map(REDES)
+        df.rename(columns={"connectionId": "connection"}, inplace=True)
     df.drop(columns=["userId", "departmentId", "chatLink"], errors="ignore", inplace=True)
 
     df.to_excel(file_output, index=False)
@@ -65,87 +209,28 @@ def run_etl(file_input: str, file_output: str) -> pd.DataFrame:
 
 def resumen_leads(df: pd.DataFrame, fecha_inicio: str, fecha_fin: str,
                   file_output: str) -> pd.DataFrame:
-    """Genera tabla de leads por asesor en el rango indicado."""
+    """Leads revisados en el rango de fechas (por firstSentMessageAt)."""
     df = df.copy()
-    df["createdAt"] = pd.to_datetime(df["createdAt"])
-
+    df["firstSentMessageAt"] = pd.to_datetime(df["firstSentMessageAt"], errors="coerce")
     mask = (
-        (df["createdAt"].dt.date >= pd.Timestamp(fecha_inicio).date()) &
-        (df["createdAt"].dt.date <= pd.Timestamp(fecha_fin).date())
+        df["firstSentMessageAt"].notna() &
+        (df["firstSentMessageAt"].dt.date >= pd.Timestamp(fecha_inicio).date()) &
+        (df["firstSentMessageAt"].dt.date <= pd.Timestamp(fecha_fin).date())
     )
-
     result = (
         df[mask]
         .groupby("asesor")
         .size()
-        .reset_index(name="total_leads")
+        .reset_index(name="total_leads_revisados")
     )
-
     result.to_excel(file_output, index=False)
-    print(f"Resumen de leads ({fecha_inicio} → {fecha_fin})")
+    print(f"Leads revisados ({fecha_inicio} → {fecha_fin})")
     print(result.to_string(index=False))
     print(f"\nArchivo exportado: {file_output}")
     return result
 
 
-# ── Ejecución ─────────────────────────────────────────────────
-if __name__ == "__main__":
-    df_limpio = run_etl(FILE_INPUT, FILE_OUTPUT_CLEAN)
-    resumen_leads(df_limpio, FECHA_INICIO, FECHA_FIN, FILE_OUTPUT_LEADS)
-
-
-# ── API para el dashboard ──────────────────────────────────────
-_ASESORES_DASH = {"CHELSEA": "Chelsea", "KATIUSKA": "Katiuska", "KARINA": "Karina"}
-
-
-def _read(src) -> pd.DataFrame:
-    if isinstance(src, (bytes, bytearray)):
-        return pd.read_excel(io.BytesIO(src))
-    return pd.read_excel(src)
-
-
-def get_leads_total_df(file=None) -> pd.DataFrame:
-    """Total de conversaciones (leads) por asesora sin filtro de fechas."""
-    src = file if file is not None else FILE_INPUT
-    try:
-        df = _read(src)
-        df = df.loc[:, df.isna().mean() <= 0.40]
-        df["user"] = df["user"].replace("PAMELA - 932471545", "KARINA")
-        df = df[df["user"].isin(_ASESORES_DASH.keys())].copy()
-        df["asesora"] = df["user"].map(_ASESORES_DASH)
-        return df.groupby("asesora").size().reset_index(name="total_leads")
-    except Exception:
-        return pd.DataFrame({"asesora": ["Chelsea", "Katiuska", "Karina"], "total_leads": [0, 0, 0]})
-
-
-def get_leads_df(file=None) -> pd.DataFrame:
-    """Devuelve DataFrame mensual de leads con columnas estándar para el dashboard."""
-    src = file if file is not None else FILE_INPUT
-    try:
-        df = _read(src)
-        df = df.loc[:, df.isna().mean() <= 0.40]
-        df["user"] = df["user"].replace("PAMELA - 932471545", "KARINA")
-        df = df[df["user"].isin(_ASESORES_DASH.keys())].copy()
-        df["createdAt"] = pd.to_datetime(df["createdAt"], errors="coerce")
-        df = df.dropna(subset=["createdAt"])
-        df["asesora"] = df["user"].map(_ASESORES_DASH)
-        df["mes"] = df["createdAt"].dt.to_period("M")
-
-        agg = (
-            df.groupby(["asesora", "mes"])
-            .size()
-            .reset_index(name="leads_revisados")
-        )
-        # ventas_realizadas no está en Whaticket → estimación ~25 %
-        agg["ventas_realizadas"] = (agg["leads_revisados"] * 0.25).round().astype(int)
-        agg["fecha"] = agg["mes"].apply(lambda p: p.to_timestamp().date())
-        return agg[["fecha", "asesora", "leads_revisados", "ventas_realizadas"]].reset_index(drop=True)
-    except Exception:
-        return _stub_leads()
-
-
 def _stub_leads() -> pd.DataFrame:
-    """Datos de ejemplo para desarrollo cuando el Excel no está disponible."""
     rng   = np.random.default_rng(42)
     meses = pd.date_range("2026-03-01", periods=4, freq="MS").date
     rows  = []
@@ -159,3 +244,8 @@ def _stub_leads() -> pd.DataFrame:
                 "ventas_realizadas": int(rng.integers(8, 25)),
             })
     return pd.DataFrame(rows)
+
+
+if __name__ == "__main__":
+    df_limpio = run_etl(FILE_INPUT, FILE_OUTPUT_CLEAN)
+    resumen_leads(df_limpio, FECHA_INICIO, FECHA_FIN, FILE_OUTPUT_LEADS)

@@ -101,7 +101,7 @@ _G = dict(showgrid=True, gridcolor="#F1F5F9", zeroline=False, tickfont=dict(size
 
 
 # ── Carga y caché ─────────────────────────────────────────────
-_V = "v3"   # incrementar si cambia la lógica del ETL para invalidar caché
+_V = "v4"   # incrementar si cambia la lógica del ETL para invalidar caché
 
 @st.cache_data(show_spinner="Cargando ventas…")
 def _cargar_ventas(b: bytes, _v: str = _V) -> pd.DataFrame:
@@ -112,7 +112,7 @@ def _cargar_leads(b: bytes, _v: str = _V) -> pd.DataFrame:
     return etl_whaticket.get_leads_df(b)
 
 @st.cache_data(show_spinner="Calculando resumen…")
-def _cargar_resumen(b_lap: bytes, b_what: bytes, _v: str = _V) -> pd.DataFrame:
+def _cargar_resumen(b_lap: bytes, b_what: bytes, _v: str = _V) -> pd.DataFrame:  # noqa: E501
     resumen = etl_ventas.get_resumen_df(b_lap)
     leads   = etl_whaticket.get_leads_total_df(b_what)
     if resumen.empty:
@@ -124,6 +124,16 @@ def _cargar_resumen(b_lap: bytes, b_what: bytes, _v: str = _V) -> pd.DataFrame:
         df["ventas_total"] / df["total_leads"].replace(0, pd.NA) * 100
     ).round(1)
     return df.sort_values("total_cobrado", ascending=False).reset_index(drop=True)
+
+
+@st.cache_data(show_spinner="Cargando pivot horario…")
+def _cargar_pivot_hora(b_what: bytes, _v: str = _V) -> pd.DataFrame:
+    return etl_whaticket.get_pivot_hora_asesora(b_what)
+
+
+@st.cache_data(show_spinner="Calculando resumen de atención…")
+def _cargar_resumen_atencion(b_what: bytes, _v: str = _V) -> pd.DataFrame:
+    return etl_whaticket.get_resumen_asesoras(b_what)
 
 
 # ── Filtros ───────────────────────────────────────────────────
@@ -386,6 +396,94 @@ def render_comisiones(df: pd.DataFrame) -> None:
         st.markdown('</div>', unsafe_allow_html=True)
 
 
+# ── Gráfica 5: Barras de leads revisados por hora ────────────
+def render_leads_hora_bar(pivot: pd.DataFrame) -> None:
+    """Barras agrupadas: cantidad de leads revisados por hora del día."""
+    if pivot.empty:
+        st.warning("Sin datos de horario.")
+        return
+
+    config = [("Chelsea", C_CHELSEA), ("Katiuska", C_KATIUSKA), ("Karina", C_KARINA)]
+    horas  = list(range(6, 24))          # desde las 6 am
+    etiq   = [f"{h:02d}:00" for h in horas]
+
+    fig = go.Figure()
+
+    # Franja horaria laboral (10:00–19:45)
+    fig.add_vrect(
+        x0="10:00", x1="19:00",
+        fillcolor="#F0FDF4", opacity=0.55,
+        layer="below", line_width=0,
+        annotation_text="Horario laboral",
+        annotation_position="top left",
+        annotation_font=dict(size=9, color="#6B7280"),
+    )
+
+    for nombre, color in config:
+        vals = [int(pivot.loc[h, nombre]) if nombre in pivot.columns else 0 for h in horas]
+        fig.add_trace(go.Bar(
+            name=nombre, x=etiq, y=vals,
+            marker=dict(color=color, line=dict(width=0)),
+            hovertemplate=f"<b>{nombre}</b><br>%{{x}}<br>%{{y}} leads revisados<extra></extra>",
+        ))
+
+    _layout_bar = {**_L, "margin": dict(t=72, b=60, l=52, r=44)}
+    fig.update_layout(
+        **_layout_bar,
+        title=dict(text="<b>Leads revisados por hora del día</b>",
+                   font=dict(size=14), x=0, xanchor="left"),
+        barmode="group", bargap=0.18, bargroupgap=0.06,
+        xaxis=dict(showgrid=False, tickfont=dict(size=9),
+                   tickangle=45, title="Hora del día"),
+        yaxis=dict(**_G, title="Leads revisados"),
+    )
+    with st.container():
+        st.markdown('<div class="chart-card">', unsafe_allow_html=True)
+        st.plotly_chart(fig, width="stretch")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+
+# ── Gráfica 6: Pie de leads asignados ────────────────────────
+def render_leads_asignados_pie(df_res: pd.DataFrame) -> None:
+    """Donut chart de leads asignados totales por asesora."""
+    if df_res.empty:
+        st.warning("Sin datos.")
+        return
+
+    colors_map = {"Chelsea": C_CHELSEA, "Katiuska": C_KATIUSKA, "Karina": C_KARINA}
+    asesoras   = df_res["asesora"].tolist()
+    valores    = df_res["leads_asignados"].tolist()
+    colors     = [colors_map.get(a, AZUL) for a in asesoras]
+
+    fig = go.Figure(go.Pie(
+        labels=asesoras,
+        values=valores,
+        marker=dict(colors=colors, line=dict(color="white", width=2)),
+        textinfo="label+percent+value",
+        textfont=dict(size=12, color="white"),
+        hovertemplate=(
+            "<b>%{label}</b><br>%{value:,} leads asignados"
+            "<br>%{percent}<extra></extra>"
+        ),
+        hole=0.38,
+    ))
+    _layout_pie = {
+        **_L,
+        "margin": dict(t=72, b=70, l=20, r=20),
+        "legend": dict(orientation="h", yanchor="bottom", y=-0.22,
+                       xanchor="center", x=0.5, font=dict(size=11)),
+    }
+    fig.update_layout(
+        **_layout_pie,
+        title=dict(text="<b>Leads asignados por asesora</b>",
+                   font=dict(size=14), x=0, xanchor="left"),
+    )
+    with st.container():
+        st.markdown('<div class="chart-card">', unsafe_allow_html=True)
+        st.plotly_chart(fig, width="stretch")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+
 # ── Tabla resumen ─────────────────────────────────────────────
 def render_tabla_resumen(df: pd.DataFrame) -> None:
     if df.empty:
@@ -410,7 +508,8 @@ def render_tabla_resumen(df: pd.DataFrame) -> None:
     st.dataframe(out, hide_index=True, width="stretch")
     st.caption(
         "Ventas Perú = hoja PROVEDORES · Ventas USA = hoja IMPORTACION · "
-        "Tasa conversión = Total ventas / Total leads × 100"
+        "Total leads = leads revisados (firstSentMessageAt no nulo) · "
+        "Tasa conversión = Total ventas / Total leads revisados × 100"
     )
 
 
@@ -508,6 +607,40 @@ def main() -> None:
         render_excedente_mensual(df_filt)
     with col4:
         render_comisiones(df_filt)
+
+    # ── Fila 3: Horario de atención + Pie asignados ──────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div class="section-lbl">Atención de leads</div>',
+                unsafe_allow_html=True)
+    try:
+        pivot_hora   = _cargar_pivot_hora(b_what)
+        df_res_aten  = _cargar_resumen_atencion(b_what)
+        col5, col6   = st.columns(2, gap="large")
+        with col5:
+            render_leads_hora_bar(pivot_hora)
+        with col6:
+            render_leads_asignados_pie(df_res_aten)
+
+        if not df_res_aten.empty:
+            with st.expander("Ver resumen de atención por asesora"):
+                out_aten = df_res_aten.copy()
+                out_aten["tasa_revision"] = out_aten["tasa_revision"].map(
+                    lambda x: f"{x:.1f}%" if pd.notna(x) else "—"
+                )
+                out_aten["hora_pico"] = out_aten["hora_pico"].map(
+                    lambda x: f"{int(x):02d}:00" if pd.notna(x) else "—"
+                )
+                out_aten.columns = [
+                    "Asesora", "Leads asignados", "Leads revisados",
+                    "Tasa revisión", "Hora pico",
+                ]
+                st.dataframe(out_aten, hide_index=True, width="stretch")
+                st.caption(
+                    "Revisado = firstSentMessageAt no nulo · "
+                    "Hora pico = hora con más atenciones del día"
+                )
+    except Exception as e:
+        _show_error("Error en análisis de atención", e)
 
     # ── Tabla resumen ─────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
