@@ -10,7 +10,10 @@ import pandas as pd
 
 import etl_ventas
 import etl_whaticket
-from transforms import agregar_ganancia_laptop, construir_resumen_meses, filtrar_meses
+from transforms import (
+    agregar_ganancia_laptop, construir_resumen_meses,
+    construir_resumen_completo, filtrar_meses,
+)
 from components import (
     CSS,
     render_kpis,
@@ -152,12 +155,17 @@ def main() -> None:
     with col4:
         render_ingreso_mensual(df_filt)
 
+    # ── Detalle base de leads (una sola carga cacheada) ───────────────────────
+    try:
+        df_asig_base, df_rev_base = _cargar_base_leads(b_what)
+    except Exception:
+        df_asig_base = df_rev_base = pd.DataFrame()
+
     # ── Sección 3: Atención de leads ──────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown('<div class="section-lbl">Atención de leads</div>', unsafe_allow_html=True)
     try:
-        # Detalle base cacheado + filtrado en memoria por fecha/asesora
-        df_asig_base, df_rev_base = _cargar_base_leads(b_what)
+        # Filtrado en memoria por los filtros del panel lateral
         df_asig_f = etl_whaticket.filtrar_detalle(
             df_asig_base, "createdAt", fi, ff, ase)
         df_rev_f  = etl_whaticket.filtrar_detalle(
@@ -169,32 +177,24 @@ def main() -> None:
             render_leads_hora_bar(pivot_hora)
         with col6:
             render_leads_asignados_pie(df_atencion)
-
-        if not df_atencion.empty:
-            with st.expander("Ver resumen de atención por asesora"):
-                out = df_atencion.copy()
-                out["tasa_revision"] = out["tasa_revision"].map(
-                    lambda x: f"{x:.1f}%" if pd.notna(x) else "—"
-                )
-                out["hora_pico"] = out["hora_pico"].map(
-                    lambda x: f"{int(x):02d}:00" if pd.notna(x) else "—"
-                )
-                out.columns = ["Asesora", "Leads asignados", "Leads revisados",
-                               "Tasa revisión", "Hora pico"]
-                st.dataframe(out, hide_index=True, width="stretch")
-                st.caption(
-                    "Revisado = firstSentMessageAt no nulo · "
-                    "Leads asignados y revisados excluyen ausencias de Katiuska"
-                )
     except Exception as e:
         show_error("Error en análisis de atención", e)
 
-    # ── Tabla resumen (abril · mayo · junio) ──────────────────────────────────
+    # ── Tabla resumen única (ventas + atención) · abril · mayo · junio ─────────
     st.markdown("<br>", unsafe_allow_html=True)
     try:
         df_res_meses = construir_resumen_meses(df_v, df_l, meses=(4, 5, 6))
-        df_v_meses = filtrar_meses(df_v, meses=(4, 5, 6))
-        render_tabla_resumen(df_res_meses, df_v=df_v_meses,
+        df_v_meses   = filtrar_meses(df_v, meses=(4, 5, 6))
+
+        # Atención (leads) del MISMO periodo abril→junio, para unir en la tabla
+        anio_meses = int(pd.to_datetime(
+            df_v["fecha_efectiva_venta"], errors="coerce").dt.year.max())
+        asig_meses = filtrar_meses(df_asig_base, (4, 5, 6), anio_meses, "createdAt")
+        rev_meses  = filtrar_meses(df_rev_base,  (4, 5, 6), anio_meses, "firstSentMessageAt")
+        df_aten_meses = etl_whaticket.resumen_from(asig_meses, rev_meses)
+
+        df_res_full = construir_resumen_completo(df_res_meses, df_aten_meses)
+        render_tabla_resumen(df_res_full, df_v=df_v_meses,
                              subtitulo="Periodo abril → junio")
     except Exception as e:
         show_error("Error en tabla resumen", e)

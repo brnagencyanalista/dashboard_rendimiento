@@ -392,7 +392,11 @@ def render_leads_asignados_pie(df_res: pd.DataFrame) -> None:
 def render_tabla_resumen(df_res: pd.DataFrame,
                           df_v: pd.DataFrame | None = None,
                           subtitulo: str = "Periodo 19 mar → hoy") -> None:
-    """Tabla agregada por asesora + expander con desglose Perú."""
+    """
+    Tabla única por asesora: ventas (ingreso bruto, excedente, Perú/USA, tasa de
+    conversión) + atención de leads (asignados, revisados, tasa de revisión,
+    hora pico) + expander con desglose Perú.
+    """
     if df_res.empty:
         st.warning("Sin datos de resumen.")
         return
@@ -400,30 +404,44 @@ def render_tabla_resumen(df_res: pd.DataFrame,
                 unsafe_allow_html=True)
 
     cols = ["asesora", "ingreso_bruto", "excedente_total",
-            "peru", "usa", "ventas_total", "total_leads", "tasa_conversion"]
+            "peru", "usa", "ventas_total",
+            "leads_asignados", "leads_revisados", "tasa_revision",
+            "tasa_conversion", "hora_pico"]
     out = df_res[[c for c in cols if c in df_res.columns]].copy()
 
     for col in ["ingreso_bruto", "excedente_total"]:
         if col in out.columns:
             out[col] = out[col].map(lambda x: f"S/ {x:,.2f}")
-    out["tasa_conversion"] = out["tasa_conversion"].map(
-        lambda x: f"{x:.1f}%" if pd.notna(x) else "—"
-    )
+    for col in ["tasa_conversion", "tasa_revision"]:
+        if col in out.columns:
+            out[col] = out[col].map(lambda x: f"{x:.1f}%" if pd.notna(x) else "—")
+    for col in ["leads_asignados", "leads_revisados"]:
+        if col in out.columns:
+            out[col] = out[col].map(lambda x: f"{int(x):,}" if pd.notna(x) else "—")
+    if "hora_pico" in out.columns:
+        out["hora_pico"] = out["hora_pico"].map(
+            lambda x: f"{int(x):02d}:00" if pd.notna(x) else "—"
+        )
+
     out.rename(columns={
-        "asesora":        "Asesora",
-        "ingreso_bruto":  "Ingreso bruto",
-        "excedente_total":"Excedente total",
-        "peru":           "Ventas Perú",
-        "usa":            "Ventas USA",
-        "ventas_total":   "Total ventas",
-        "total_leads":    "Total leads",
-        "tasa_conversion":"Tasa conversión",
+        "asesora":         "Asesora",
+        "ingreso_bruto":   "Ingreso bruto",
+        "excedente_total": "Excedente total",
+        "peru":            "Ventas Perú",
+        "usa":             "Ventas USA",
+        "ventas_total":    "Total ventas",
+        "leads_asignados": "Leads asignados",
+        "leads_revisados": "Leads revisados",
+        "tasa_revision":   "Tasa revisión",
+        "tasa_conversion": "Tasa conversión",
+        "hora_pico":       "Hora pico",
     }, inplace=True)
     st.dataframe(out, hide_index=True, width="stretch")
     st.caption(
         "Ingreso bruto: USA=S/350 por laptop · Perú=ganancia laptop + excedente · "
-        "Total leads excluye ausencias Katiuska · "
-        "Tasa conversión = Total ventas / Total leads × 100"
+        "Leads asignados/revisados excluyen ausencias de Katiuska · "
+        "Tasa revisión = revisados / asignados × 100 · "
+        "Tasa conversión = Total ventas / leads revisados × 100"
     )
 
     # Desglose Peru: ganancia laptop vs excedente

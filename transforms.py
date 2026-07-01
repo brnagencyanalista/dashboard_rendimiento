@@ -201,3 +201,31 @@ def construir_resumen_meses(df_v: pd.DataFrame,
         res["ventas_total"] / res["total_leads"].replace(0, pd.NA) * 100
     ).round(1)
     return res.sort_values("ingreso_bruto", ascending=False).reset_index(drop=True)
+
+
+def construir_resumen_completo(df_res: pd.DataFrame,
+                               df_aten: pd.DataFrame) -> pd.DataFrame:
+    """
+    Une el resumen de ventas por asesora (ingreso bruto, excedente, ventas
+    Perú/USA, tasa de conversión) con el resumen de atención de leads
+    (asignados, revisados, tasa de revisión, hora pico) en una sola tabla.
+
+    Entrada:
+      df_res  : output de construir_resumen_meses()
+      df_aten : output de etl_whaticket.resumen_from() para el mismo periodo
+    """
+    if df_res.empty:
+        return df_res
+
+    cols_aten = ["asesora", "leads_asignados", "leads_revisados",
+                 "tasa_revision", "hora_pico"]
+    out = df_res.copy()
+
+    if df_aten is not None and not df_aten.empty:
+        aten = df_aten[[c for c in cols_aten if c in df_aten.columns]]
+        out = out.merge(aten, on="asesora", how="left")
+    else:
+        for c in cols_aten[1:]:
+            out[c] = pd.NA
+
+    return out.sort_values("ingreso_bruto", ascending=False).reset_index(drop=True)
