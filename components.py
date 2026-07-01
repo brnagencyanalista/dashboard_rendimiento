@@ -14,7 +14,6 @@ from config import (
     AZUL, VERDE, NARANJA, VIOLETA, ROSA, CYAN,
     COLOR_ASESORA,
 )
-from transforms import calcular_comision
 
 # ── Estilos CSS ───────────────────────────────────────────────────────────────
 
@@ -98,8 +97,12 @@ def _kpi(col, label: str, value: str, sub: str, accent: str) -> None:
     )
 
 
-def render_kpis(df_v: pd.DataFrame, df_resumen: pd.DataFrame) -> None:
-    """5 KPIs: Ingreso bruto · Laptops vendidas · Excedente total · Excedente promedio · Tasa conversión."""
+def render_kpis(df_v: pd.DataFrame, df_leads_filt: pd.DataFrame) -> None:
+    """5 KPIs: Ingreso bruto · Laptops vendidas · Excedente total · Excedente promedio · Tasa conversión.
+
+    La tasa de conversión se calcula sobre los datos ya filtrados (periodo/asesora),
+    por lo que varía según los filtros del panel lateral.
+    """
     total   = len(df_v)
     t1      = int((df_v["tipo_laptop"] == 1).sum())
     t2      = int((df_v["tipo_laptop"] == 2).sum())
@@ -117,13 +120,13 @@ def render_kpis(df_v: pd.DataFrame, df_resumen: pd.DataFrame) -> None:
     avg_exc = pos["excedente"].mean() if n_exc > 0 else 0.0
     sub_exc = f"{n_exc} de {total} ventas generaron excedente"
 
-    if df_resumen is not None and not df_resumen.empty:
-        tot_v = int(df_resumen["ventas_total"].sum())
-        tot_l = int(df_resumen["total_leads"].sum())
-        tasa  = round(tot_v / tot_l * 100, 1) if tot_l > 0 else 0.0
+    tot_v = total
+    if (df_leads_filt is not None and not df_leads_filt.empty
+            and "leads_revisados" in df_leads_filt.columns):
+        tot_l = int(df_leads_filt["leads_revisados"].sum())
     else:
-        tot_v = tot_l = 0
-        tasa  = 0.0
+        tot_l = 0
+    tasa = round(tot_v / tot_l * 100, 1) if tot_l > 0 else 0.0
 
     c1, c2, c3, c4, c5 = st.columns(5)
     _kpi(c1, "Ingreso bruto",      f"S/ {ingreso_emp:,.0f}", sub_ing,                              ROSA)
@@ -272,22 +275,15 @@ def render_ventas_semanales(df: pd.DataFrame) -> None:
         st.markdown(_CHART_END, unsafe_allow_html=True)
 
 
-# ── Gráfica 4: Comisión estimada mensual ─────────────────────────────────────
+# ── Gráfica 4: Ingreso bruto mensual por asesora ─────────────────────────────
 
-def render_comisiones(df: pd.DataFrame) -> None:
-    """Barras agrupadas: comisión estimada mensual por asesora."""
+def render_ingreso_mensual(df: pd.DataFrame) -> None:
+    """Barras agrupadas: ingreso bruto mensual por asesora (USA S/350 · Perú ganancia+exc)."""
     if df.empty:
         st.warning("Sin datos.")
         return
     df = df.copy()
-    df["comision"] = [
-        calcular_comision(
-            int(row.get("nivel_asesora", 1)),
-            int(row.get("tipo_laptop",   1)),
-            float(row.get("excedente",    0)),
-        )
-        for _, row in df.iterrows()
-    ]
+    col_ingreso = "ingreso_empresa" if "ingreso_empresa" in df.columns else "excedente"
     df["mes_k"] = pd.to_datetime(df["fecha_efectiva_venta"]).dt.to_period("M").astype(str)
     df["mes_l"] = pd.to_datetime(df["fecha_efectiva_venta"]).dt.strftime("%b %Y")
     meses_k     = sorted(df["mes_k"].unique())
@@ -297,21 +293,21 @@ def render_comisiones(df: pd.DataFrame) -> None:
     fig = go.Figure()
     for nombre, color in [("Chelsea", C_CHELSEA), ("Katiuska", C_KATIUSKA), ("Karina", C_KARINA)]:
         sub = df[df["asesora"] == nombre]
-        agg = sub.groupby("mes_k")["comision"].sum().reindex(meses_k, fill_value=0).reset_index()
+        agg = sub.groupby("mes_k")[col_ingreso].sum().reindex(meses_k, fill_value=0).reset_index()
         agg["lbl"] = agg["mes_k"].map(mes_map)
         fig.add_trace(go.Bar(
-            name=nombre, x=agg["lbl"], y=agg["comision"],
+            name=nombre, x=agg["lbl"], y=agg[col_ingreso],
             marker=dict(color=color, line=dict(width=0)),
-            text=agg["comision"].map(lambda v: f"S/{v:,.0f}"),
+            text=agg[col_ingreso].map(lambda v: f"S/{v:,.0f}"),
             textposition="outside",
             textfont=dict(size=10, color=color),
             hovertemplate=f"<b>{nombre}</b><br>%{{x}}<br>S/ %{{y:,.0f}}<extra></extra>",
         ))
 
-    fig.update_layout(**_L, title="<b>Comisión estimada mensual por asesora</b>",
+    fig.update_layout(**_L, title="<b>Ingreso bruto mensual por asesora</b>",
                       barmode="group", bargap=0.22, bargroupgap=0.07,
                       xaxis=dict(showgrid=False, tickfont=dict(size=11)),
-                      yaxis=dict(**_G, title="S/ comisión estimada"))
+                      yaxis=dict(**_G, title="S/ ingreso bruto"))
     with st.container():
         st.markdown(_CHART, unsafe_allow_html=True)
         st.plotly_chart(fig, width="stretch")
@@ -394,12 +390,13 @@ def render_leads_asignados_pie(df_res: pd.DataFrame) -> None:
 # ── Tabla resumen ─────────────────────────────────────────────────────────────
 
 def render_tabla_resumen(df_res: pd.DataFrame,
-                          df_v: pd.DataFrame | None = None) -> None:
+                          df_v: pd.DataFrame | None = None,
+                          subtitulo: str = "Periodo 19 mar → hoy") -> None:
     """Tabla agregada por asesora + expander con desglose Perú."""
     if df_res.empty:
         st.warning("Sin datos de resumen.")
         return
-    st.markdown('<div class="section-lbl">Resumen por asesora · Periodo 19 mar → hoy</div>',
+    st.markdown(f'<div class="section-lbl">Resumen por asesora · {subtitulo}</div>',
                 unsafe_allow_html=True)
 
     cols = ["asesora", "ingreso_bruto", "excedente_total",

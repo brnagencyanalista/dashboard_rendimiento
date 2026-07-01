@@ -123,3 +123,54 @@ def construir_resumen_general(df_resumen: pd.DataFrame,
         df["ventas_total"] / df["total_leads"].replace(0, pd.NA) * 100
     ).round(1)
     return df.sort_values("ingreso_bruto", ascending=False).reset_index(drop=True)
+
+
+def construir_resumen_meses(df_v: pd.DataFrame,
+                            df_l: pd.DataFrame,
+                            meses: tuple[int, ...] = (4, 5, 6)) -> pd.DataFrame:
+    """
+    Resumen por asesora restringido a un conjunto de meses (por defecto abr-may-jun).
+
+    Se construye directamente desde el detalle de ventas (df_v, ya con
+    ingreso_empresa/ganancia_laptop) y el detalle de leads revisados por mes
+    (df_l), de modo que refleja exactamente el periodo pedido.
+
+    Entrada:
+      df_v : output de etl_ventas.get_ventas_df() + agregar_ganancia_laptop()
+      df_l : output de etl_whaticket.get_leads_df()
+    """
+    if df_v.empty:
+        return pd.DataFrame()
+
+    v = df_v.copy()
+    mes_v = pd.to_datetime(v["fecha_efectiva_venta"]).dt.month
+    v = v[mes_v.isin(meses)]
+    if v.empty:
+        return pd.DataFrame()
+
+    res = (
+        v.groupby("asesora")
+        .agg(
+            ingreso_bruto=("ingreso_empresa", "sum"),
+            excedente_total=("excedente", "sum"),
+            peru=("pais", lambda s: int((s == "Peru").sum())),
+            usa=("pais",  lambda s: int((s == "USA").sum())),
+        )
+        .reset_index()
+    )
+    res["ventas_total"] = res["peru"] + res["usa"]
+
+    if df_l is not None and not df_l.empty and "leads_revisados" in df_l.columns:
+        l = df_l.copy()
+        mes_l = pd.to_datetime(l["fecha"]).dt.month
+        l = l[mes_l.isin(meses)]
+        leads = l.groupby("asesora")["leads_revisados"].sum().rename("total_leads")
+        res = res.merge(leads, on="asesora", how="left")
+    else:
+        res["total_leads"] = 0
+
+    res["total_leads"] = res["total_leads"].fillna(0).astype(int)
+    res["tasa_conversion"] = (
+        res["ventas_total"] / res["total_leads"].replace(0, pd.NA) * 100
+    ).round(1)
+    return res.sort_values("ingreso_bruto", ascending=False).reset_index(drop=True)

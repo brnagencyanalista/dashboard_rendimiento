@@ -10,12 +10,12 @@ import pandas as pd
 
 import etl_ventas
 import etl_whaticket
-from transforms import agregar_ganancia_laptop, construir_resumen_general
+from transforms import agregar_ganancia_laptop, construir_resumen_meses
 from components import (
     CSS,
     render_kpis,
     render_mix_laptops, render_ventas_semanales,
-    render_excedente_mensual, render_comisiones,
+    render_excedente_mensual, render_ingreso_mensual,
     render_leads_hora_bar, render_leads_asignados_pie,
     render_tabla_resumen, show_error,
 )
@@ -32,16 +32,6 @@ def _cargar_ventas(b: bytes) -> pd.DataFrame:
 @st.cache_data(show_spinner="Cargando leads…")
 def _cargar_leads(b: bytes) -> pd.DataFrame:
     return etl_whaticket.get_leads_df(b)
-
-
-@st.cache_data(show_spinner="Calculando resumen…")
-def _cargar_resumen_ventas(b_lap: bytes) -> pd.DataFrame:
-    return etl_ventas.get_resumen_df(b_lap)
-
-
-@st.cache_data(show_spinner="Cargando leads totales…")
-def _cargar_leads_totales(b_what: bytes) -> pd.DataFrame:
-    return etl_whaticket.get_leads_total_df(b_what)
 
 
 @st.cache_data(show_spinner="Cargando pivot horario…")
@@ -143,16 +133,9 @@ def main() -> None:
         st.warning("Sin datos para los filtros seleccionados.")
         return
 
-    # ── Resumen para KPIs ─────────────────────────────────────────────────────
-    try:
-        df_res_ventas = _cargar_resumen_ventas(b_lap)
-        df_res_leads  = _cargar_leads_totales(b_what)
-        df_res_kpi    = construir_resumen_general(df_res_ventas, df_res_leads)
-    except Exception:
-        df_res_kpi = pd.DataFrame()
-
     # ── KPIs ─────────────────────────────────────────────────────────────────
-    render_kpis(df_filt, df_res_kpi)
+    # La tasa de conversión usa los leads ya filtrados → varía con los filtros.
+    render_kpis(df_filt, df_lfilt)
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Sección 1: Volumen de ventas ──────────────────────────────────────────
@@ -170,7 +153,7 @@ def main() -> None:
     with col3:
         render_excedente_mensual(df_filt)
     with col4:
-        render_comisiones(df_filt)
+        render_ingreso_mensual(df_filt)
 
     # ── Sección 3: Atención de leads ──────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
@@ -203,10 +186,15 @@ def main() -> None:
     except Exception as e:
         show_error("Error en análisis de atención", e)
 
-    # ── Tabla resumen ─────────────────────────────────────────────────────────
+    # ── Tabla resumen (abril · mayo · junio) ──────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
     try:
-        render_tabla_resumen(df_res_kpi, df_v=df_v)
+        df_res_meses = construir_resumen_meses(df_v, df_l, meses=(4, 5, 6))
+        df_v_meses = df_v[
+            pd.to_datetime(df_v["fecha_efectiva_venta"]).dt.month.isin([4, 5, 6])
+        ]
+        render_tabla_resumen(df_res_meses, df_v=df_v_meses,
+                             subtitulo="Periodo abril → junio")
     except Exception as e:
         show_error("Error en tabla resumen", e)
 
