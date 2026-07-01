@@ -145,20 +145,90 @@ def get_leads_df(file=None) -> pd.DataFrame:
         return _stub_leads()
 
 
-def get_pivot_hora_asesora(file=None) -> pd.DataFrame:
-    """Pivot: filas=hora (0-23), columnas=asesora, valores=leads revisados."""
+def get_leads_base(file=None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Detalle base de leads ya normalizado: (df_asignados, df_revisados).
+
+    Pensado para cachearse UNA sola vez (lectura pesada) y luego filtrarse en
+    memoria con filtrar_detalle() según los filtros del dashboard.
+    """
     src = file if file is not None else FILE_INPUT
-    try:
-        _, df_rev = _cargar_base(src)
-        df_rev["hora"] = df_rev["firstSentMessageAt"].dt.hour
-        pivot = (
-            df_rev.pivot_table(index="hora", columns="asesora",
-                               aggfunc="size", fill_value=0)
-            .reindex(range(24), fill_value=0)
+    return _cargar_base(src)
+
+
+def filtrar_detalle(df: pd.DataFrame,
+                    fecha_col: str = "firstSentMessageAt",
+                    fi=None, ff=None, asesora: str | None = None) -> pd.DataFrame:
+    """Filtra un detalle de leads por rango de fechas (sobre fecha_col) y asesora."""
+    if df.empty:
+        return df
+    out = df
+    if fecha_col in out.columns and (fi is not None or ff is not None):
+        fechas = out[fecha_col].dt.date
+        mask = pd.Series(True, index=out.index)
+        if fi is not None:
+            mask &= fechas >= fi
+        if ff is not None:
+            mask &= fechas <= ff
+        out = out[mask.fillna(False)]
+    if asesora:
+        out = out[out["asesora"] == asesora]
+    return out.copy()
+
+
+def pivot_hora_from(df_rev: pd.DataFrame) -> pd.DataFrame:
+    """Pivot hora×asesora desde un detalle de revisados ya filtrado."""
+    if df_rev.empty:
+        return pd.DataFrame()
+    d = df_rev.copy()
+    d["hora"] = d["firstSentMessageAt"].dt.hour
+    pivot = (
+        d.pivot_table(index="hora", columns="asesora", aggfunc="size", fill_value=0)
+        .reindex(range(24), fill_value=0)
+    )
+    pivot.index.name   = "Hora"
+    pivot.columns.name = None
+    return pivot
+
+
+def resumen_from(df_asig: pd.DataFrame, df_rev: pd.DataFrame) -> pd.DataFrame:
+    """Resumen asignados/revisados/tasa/hora pico desde detalles ya filtrados."""
+    if df_asig.empty and df_rev.empty:
+        return pd.DataFrame()
+
+    asignados = df_asig.groupby("asesora").size().rename("leads_asignados")
+    revisados = df_rev.groupby("asesora").size().rename("leads_revisados")
+
+    if df_rev.empty:
+        hora_pico = pd.Series(dtype="float64", name="hora_pico")
+    else:
+        d = df_rev.copy()
+        d["hora"] = d["firstSentMessageAt"].dt.hour
+        hora_pico = (
+            d.groupby(["asesora", "hora"]).size()
+            .reset_index(name="cnt")
+            .sort_values("cnt", ascending=False)
+            .drop_duplicates("asesora")
+            .set_index("asesora")["hora"]
+            .rename("hora_pico")
         )
-        pivot.index.name   = "Hora"
-        pivot.columns.name = None
-        return pivot
+
+    res = pd.concat([asignados, revisados, hora_pico], axis=1).reset_index()
+    res = res.rename(columns={"index": "asesora"})
+    res["leads_asignados"] = res["leads_asignados"].fillna(0).astype(int)
+    res["leads_revisados"] = res["leads_revisados"].fillna(0).astype(int)
+    res["tasa_revision"] = (
+        res["leads_revisados"] / res["leads_asignados"].replace(0, pd.NA) * 100
+    ).round(1)
+    return res[["asesora", "leads_asignados", "leads_revisados",
+                "tasa_revision", "hora_pico"]]
+
+
+def get_pivot_hora_asesora(file=None) -> pd.DataFrame:
+    """Pivot: filas=hora (0-23), columnas=asesora, valores=leads revisados (sin filtrar)."""
+    try:
+        _, df_rev = _cargar_base(file if file is not None else FILE_INPUT)
+        return pivot_hora_from(df_rev)
     except Exception:
         return pd.DataFrame()
 
@@ -179,30 +249,10 @@ def get_horas_revision_df(file=None) -> pd.DataFrame:
 
 
 def get_resumen_asesoras(file=None) -> pd.DataFrame:
-    """Resumen: leads asignados, revisados, tasa de revisión y hora pico."""
-    src = file if file is not None else FILE_INPUT
+    """Resumen: leads asignados, revisados, tasa de revisión y hora pico (sin filtrar)."""
     try:
-        df_asig, df_rev = _cargar_base(src)
-
-        asignados = df_asig.groupby("asesora").size().rename("leads_asignados")
-        revisados = df_rev.groupby("asesora").size().rename("leads_revisados")
-
-        df_rev["hora"] = df_rev["firstSentMessageAt"].dt.hour
-        hora_pico = (
-            df_rev.groupby(["asesora", "hora"]).size()
-            .reset_index(name="cnt")
-            .sort_values("cnt", ascending=False)
-            .drop_duplicates("asesora")
-            .set_index("asesora")["hora"]
-            .rename("hora_pico")
-        )
-
-        res = pd.concat([asignados, revisados, hora_pico], axis=1).reset_index()
-        res["tasa_revision"] = (
-            res["leads_revisados"] / res["leads_asignados"] * 100
-        ).round(1)
-        return res[["asesora", "leads_asignados", "leads_revisados",
-                    "tasa_revision", "hora_pico"]]
+        df_asig, df_rev = _cargar_base(file if file is not None else FILE_INPUT)
+        return resumen_from(df_asig, df_rev)
     except Exception:
         return pd.DataFrame()
 

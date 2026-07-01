@@ -10,7 +10,7 @@ import pandas as pd
 
 import etl_ventas
 import etl_whaticket
-from transforms import agregar_ganancia_laptop, construir_resumen_meses
+from transforms import agregar_ganancia_laptop, construir_resumen_meses, filtrar_meses
 from components import (
     CSS,
     render_kpis,
@@ -34,14 +34,10 @@ def _cargar_leads(b: bytes) -> pd.DataFrame:
     return etl_whaticket.get_leads_df(b)
 
 
-@st.cache_data(show_spinner="Cargando pivot horario…")
-def _cargar_pivot_hora(b_what: bytes) -> pd.DataFrame:
-    return etl_whaticket.get_pivot_hora_asesora(b_what)
-
-
-@st.cache_data(show_spinner="Calculando resumen de atención…")
-def _cargar_resumen_atencion(b_what: bytes) -> pd.DataFrame:
-    return etl_whaticket.get_resumen_asesoras(b_what)
+@st.cache_data(show_spinner="Cargando detalle de leads…")
+def _cargar_base_leads(b_what: bytes):
+    """Detalle base de leads (asignados, revisados). Se cachea una vez y se filtra en memoria."""
+    return etl_whaticket.get_leads_base(b_what)
 
 
 # ── Filtros ───────────────────────────────────────────────────────────────────
@@ -49,14 +45,15 @@ def _cargar_resumen_atencion(b_what: bytes) -> pd.DataFrame:
 def _filtrar(df_v: pd.DataFrame, df_l: pd.DataFrame,
              fi, ff, asesora: str | None):
     mv    = (df_v["fecha_efectiva_venta"] >= fi) & (df_v["fecha_efectiva_venta"] <= ff)
-    comp  = df_v[mv].copy()
-    filt  = comp[comp["asesora"] == asesora].copy() if asesora else comp.copy()
+    filt  = df_v[mv].copy()
+    if asesora:
+        filt = filt[filt["asesora"] == asesora].copy()
 
     ml    = (df_l["fecha"] >= fi) & (df_l["fecha"] <= ff)
     lfilt = df_l[ml].copy()
     if asesora:
         lfilt = lfilt[lfilt["asesora"] == asesora].copy()
-    return comp, filt, lfilt
+    return filt, lfilt
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -127,7 +124,7 @@ def main() -> None:
     df_v = agregar_ganancia_laptop(df_v, tc)
 
     # ── Filtrar ───────────────────────────────────────────────────────────────
-    df_comp, df_filt, df_lfilt = _filtrar(df_v, df_l, fi, ff, ase)
+    df_filt, df_lfilt = _filtrar(df_v, df_l, fi, ff, ase)
 
     if df_filt.empty and df_lfilt.empty:
         st.warning("Sin datos para los filtros seleccionados.")
@@ -142,9 +139,9 @@ def main() -> None:
     st.markdown('<div class="section-lbl">Volumen de ventas</div>', unsafe_allow_html=True)
     col1, col2 = st.columns(2, gap="large")
     with col1:
-        render_mix_laptops(df_comp)
+        render_mix_laptops(df_filt)
     with col2:
-        render_ventas_semanales(df_comp)
+        render_ventas_semanales(df_filt)
 
     # ── Sección 2: Rentabilidad y comisiones ──────────────────────────────────
     st.markdown('<div class="section-lbl">Rentabilidad y comisiones</div>',
@@ -159,8 +156,14 @@ def main() -> None:
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown('<div class="section-lbl">Atención de leads</div>', unsafe_allow_html=True)
     try:
-        pivot_hora  = _cargar_pivot_hora(b_what)
-        df_atencion = _cargar_resumen_atencion(b_what)
+        # Detalle base cacheado + filtrado en memoria por fecha/asesora
+        df_asig_base, df_rev_base = _cargar_base_leads(b_what)
+        df_asig_f = etl_whaticket.filtrar_detalle(
+            df_asig_base, "createdAt", fi, ff, ase)
+        df_rev_f  = etl_whaticket.filtrar_detalle(
+            df_rev_base, "firstSentMessageAt", fi, ff, ase)
+        pivot_hora  = etl_whaticket.pivot_hora_from(df_rev_f)
+        df_atencion = etl_whaticket.resumen_from(df_asig_f, df_rev_f)
         col5, col6  = st.columns(2, gap="large")
         with col5:
             render_leads_hora_bar(pivot_hora)
@@ -190,9 +193,7 @@ def main() -> None:
     st.markdown("<br>", unsafe_allow_html=True)
     try:
         df_res_meses = construir_resumen_meses(df_v, df_l, meses=(4, 5, 6))
-        df_v_meses = df_v[
-            pd.to_datetime(df_v["fecha_efectiva_venta"]).dt.month.isin([4, 5, 6])
-        ]
+        df_v_meses = filtrar_meses(df_v, meses=(4, 5, 6))
         render_tabla_resumen(df_res_meses, df_v=df_v_meses,
                              subtitulo="Periodo abril → junio")
     except Exception as e:

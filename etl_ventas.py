@@ -113,9 +113,9 @@ def get_ventas_df(file=None) -> pd.DataFrame:
         xls = _open(src)
 
         want_imp  = ["asesor", "fecha_pedido_venta", "precio_laptop", "total_cobrado",
-                     "excedente_total", "lead_organico", "precio_dolares", "proveedor"]
+                     "excedente_total", "lead_organico", "precio_dolares", "proveedor", "pais"]
         want_prov = ["asesor", "fecha_pedido_venta", "precio_laptop", "total_cobrado",
-                     "excedente_total", "precio_dolares", "proveedor"]
+                     "excedente_total", "precio_dolares", "proveedor", "pais"]
 
         df1 = _leer_importacion(xls)
         df1 = df1[[c for c in want_imp if c in df1.columns]].copy()

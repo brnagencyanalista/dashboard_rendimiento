@@ -125,11 +125,41 @@ def construir_resumen_general(df_resumen: pd.DataFrame,
     return df.sort_values("ingreso_bruto", ascending=False).reset_index(drop=True)
 
 
+def _anio_objetivo(df_v: pd.DataFrame,
+                   fecha_col: str = "fecha_efectiva_venta") -> int | None:
+    """Año más reciente presente en el detalle de ventas (para acotar el periodo)."""
+    if df_v.empty:
+        return None
+    fechas = pd.to_datetime(df_v[fecha_col], errors="coerce")
+    return int(fechas.dt.year.max()) if fechas.notna().any() else None
+
+
+def filtrar_meses(df: pd.DataFrame,
+                  meses: tuple[int, ...] = (4, 5, 6),
+                  anio: int | None = None,
+                  fecha_col: str = "fecha_efectiva_venta") -> pd.DataFrame:
+    """
+    Filtra un DataFrame a los meses indicados de un año concreto.
+    Si `anio` es None, usa el año más reciente presente en la columna de fecha,
+    evitando mezclar, p. ej., abril-2025 con abril-2026.
+    """
+    if df.empty:
+        return df
+    fechas = pd.to_datetime(df[fecha_col], errors="coerce")
+    if not fechas.notna().any():
+        return df.iloc[0:0].copy()
+    if anio is None:
+        anio = int(fechas.dt.year.max())
+    mask = fechas.dt.year.eq(anio) & fechas.dt.month.isin(meses)
+    return df[mask.fillna(False)].copy()
+
+
 def construir_resumen_meses(df_v: pd.DataFrame,
                             df_l: pd.DataFrame,
                             meses: tuple[int, ...] = (4, 5, 6)) -> pd.DataFrame:
     """
-    Resumen por asesora restringido a un conjunto de meses (por defecto abr-may-jun).
+    Resumen por asesora restringido a un conjunto de meses del año más reciente
+    (por defecto abr-may-jun del último año presente en las ventas).
 
     Se construye directamente desde el detalle de ventas (df_v, ya con
     ingreso_empresa/ganancia_laptop) y el detalle de leads revisados por mes
@@ -139,12 +169,11 @@ def construir_resumen_meses(df_v: pd.DataFrame,
       df_v : output de etl_ventas.get_ventas_df() + agregar_ganancia_laptop()
       df_l : output de etl_whaticket.get_leads_df()
     """
-    if df_v.empty:
+    anio = _anio_objetivo(df_v)
+    if anio is None:
         return pd.DataFrame()
 
-    v = df_v.copy()
-    mes_v = pd.to_datetime(v["fecha_efectiva_venta"]).dt.month
-    v = v[mes_v.isin(meses)]
+    v = filtrar_meses(df_v, meses, anio, "fecha_efectiva_venta")
     if v.empty:
         return pd.DataFrame()
 
@@ -161,9 +190,7 @@ def construir_resumen_meses(df_v: pd.DataFrame,
     res["ventas_total"] = res["peru"] + res["usa"]
 
     if df_l is not None and not df_l.empty and "leads_revisados" in df_l.columns:
-        l = df_l.copy()
-        mes_l = pd.to_datetime(l["fecha"]).dt.month
-        l = l[mes_l.isin(meses)]
+        l = filtrar_meses(df_l, meses, anio, "fecha")
         leads = l.groupby("asesora")["leads_revisados"].sum().rename("total_leads")
         res = res.merge(leads, on="asesora", how="left")
     else:
