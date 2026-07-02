@@ -218,7 +218,7 @@ def resumen_from(df_asig: pd.DataFrame, df_rev: pd.DataFrame) -> pd.DataFrame:
     res["leads_asignados"] = res["leads_asignados"].fillna(0).astype(int)
     res["leads_revisados"] = res["leads_revisados"].fillna(0).astype(int)
     res["tasa_revision"] = (
-        res["leads_revisados"] / res["leads_asignados"].replace(0, pd.NA) * 100
+        res["leads_revisados"] / res["leads_asignados"].replace(0, np.nan) * 100
     ).round(1)
     return res[["asesora", "leads_asignados", "leads_revisados",
                 "tasa_revision", "hora_pico"]]

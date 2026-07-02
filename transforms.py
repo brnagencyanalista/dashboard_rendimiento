@@ -120,7 +120,7 @@ def construir_resumen_general(df_resumen: pd.DataFrame,
     df["total_leads"]     = df["total_leads"].fillna(0).astype(int)
     df["ventas_total"]    = df["peru"] + df["usa"]
     df["tasa_conversion"] = (
-        df["ventas_total"] / df["total_leads"].replace(0, pd.NA) * 100
+        df["ventas_total"] / df["total_leads"].replace(0, np.nan) * 100
     ).round(1)
     return df.sort_values("ingreso_bruto", ascending=False).reset_index(drop=True)
 
@@ -188,7 +188,7 @@ def construir_resumen(df_v: pd.DataFrame,
 
     res["total_leads"] = res["total_leads"].fillna(0).astype(int)
     res["tasa_conversion"] = (
-        res["ventas_total"] / res["total_leads"].replace(0, pd.NA) * 100
+        res["ventas_total"] / res["total_leads"].replace(0, np.nan) * 100
     ).round(1)
     return res.sort_values("ingreso_bruto", ascending=False).reset_index(drop=True)
 
