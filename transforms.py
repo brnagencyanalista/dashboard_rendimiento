@@ -154,31 +154,22 @@ def filtrar_meses(df: pd.DataFrame,
     return df[mask.fillna(False)].copy()
 
 
-def construir_resumen_meses(df_v: pd.DataFrame,
-                            df_l: pd.DataFrame,
-                            meses: tuple[int, ...] = (4, 5, 6)) -> pd.DataFrame:
+def construir_resumen(df_v: pd.DataFrame,
+                      df_l: pd.DataFrame) -> pd.DataFrame:
     """
-    Resumen por asesora restringido a un conjunto de meses del año más reciente
-    (por defecto abr-may-jun del último año presente en las ventas).
-
-    Se construye directamente desde el detalle de ventas (df_v, ya con
-    ingreso_empresa/ganancia_laptop) y el detalle de leads revisados por mes
-    (df_l), de modo que refleja exactamente el periodo pedido.
+    Resumen por asesora a partir de ventas y leads YA filtrados.
+    Respeta cualquier filtro (fecha/asesora) que el llamador haya aplicado,
+    por lo que la tabla cambia según los filtros del panel lateral.
 
     Entrada:
-      df_v : output de etl_ventas.get_ventas_df() + agregar_ganancia_laptop()
-      df_l : output de etl_whaticket.get_leads_df()
+      df_v : detalle de ventas ya filtrado (con ingreso_empresa/excedente/pais)
+      df_l : detalle de leads revisados ya filtrado (con leads_revisados)
     """
-    anio = _anio_objetivo(df_v)
-    if anio is None:
-        return pd.DataFrame()
-
-    v = filtrar_meses(df_v, meses, anio, "fecha_efectiva_venta")
-    if v.empty:
+    if df_v.empty:
         return pd.DataFrame()
 
     res = (
-        v.groupby("asesora")
+        df_v.groupby("asesora")
         .agg(
             ingreso_bruto=("ingreso_empresa", "sum"),
             excedente_total=("excedente", "sum"),
@@ -190,8 +181,7 @@ def construir_resumen_meses(df_v: pd.DataFrame,
     res["ventas_total"] = res["peru"] + res["usa"]
 
     if df_l is not None and not df_l.empty and "leads_revisados" in df_l.columns:
-        l = filtrar_meses(df_l, meses, anio, "fecha")
-        leads = l.groupby("asesora")["leads_revisados"].sum().rename("total_leads")
+        leads = df_l.groupby("asesora")["leads_revisados"].sum().rename("total_leads")
         res = res.merge(leads, on="asesora", how="left")
     else:
         res["total_leads"] = 0
@@ -201,6 +191,23 @@ def construir_resumen_meses(df_v: pd.DataFrame,
         res["ventas_total"] / res["total_leads"].replace(0, pd.NA) * 100
     ).round(1)
     return res.sort_values("ingreso_bruto", ascending=False).reset_index(drop=True)
+
+
+def construir_resumen_meses(df_v: pd.DataFrame,
+                            df_l: pd.DataFrame,
+                            meses: tuple[int, ...] = (4, 5, 6)) -> pd.DataFrame:
+    """
+    Resumen por asesora restringido a un conjunto de meses del año más reciente
+    (por defecto abr-may-jun del último año presente en las ventas).
+    """
+    anio = _anio_objetivo(df_v)
+    if anio is None:
+        return pd.DataFrame()
+
+    v = filtrar_meses(df_v, meses, anio, "fecha_efectiva_venta")
+    l = (filtrar_meses(df_l, meses, anio, "fecha")
+         if df_l is not None and not df_l.empty else df_l)
+    return construir_resumen(v, l)
 
 
 def construir_resumen_completo(df_res: pd.DataFrame,

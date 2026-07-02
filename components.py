@@ -390,12 +390,11 @@ def render_leads_asignados_pie(df_res: pd.DataFrame) -> None:
 # ── Tabla resumen ─────────────────────────────────────────────────────────────
 
 def render_tabla_resumen(df_res: pd.DataFrame,
-                          df_v: pd.DataFrame | None = None,
                           subtitulo: str = "Periodo 19 mar → hoy") -> None:
     """
     Tabla única por asesora: ventas (ingreso bruto, excedente, Perú/USA, tasa de
     conversión) + atención de leads (asignados, revisados, tasa de revisión,
-    hora pico) + expander con desglose Perú.
+    hora pico). Responde a los filtros del panel lateral.
     """
     if df_res.empty:
         st.warning("Sin datos de resumen.")
@@ -443,34 +442,6 @@ def render_tabla_resumen(df_res: pd.DataFrame,
         "Tasa revisión = revisados / asignados × 100 · "
         "Tasa conversión = Total ventas / leads revisados × 100"
     )
-
-    # Desglose Peru: ganancia laptop vs excedente
-    if df_v is not None and "ganancia_laptop" in df_v.columns:
-        peru_v = df_v[df_v["pais"] == "Peru"].copy()
-        if not peru_v.empty:
-            with st.expander("Desglose ingreso Perú — ganancia laptop vs excedente"):
-                agg = (
-                    peru_v.groupby("asesora")
-                    .agg(
-                        laptops=("ganancia_laptop", "count"),
-                        ganancia_laptop=("ganancia_laptop", "sum"),
-                        excedente=("excedente", "sum"),
-                    )
-                    .reset_index()
-                )
-                agg["total"] = agg["ganancia_laptop"] + agg["excedente"]
-                for c in ["ganancia_laptop", "excedente", "total"]:
-                    agg[c] = agg[c].map(lambda x: f"S/ {x:,.0f}")
-                agg.columns = ["Asesora", "Laptops Perú",
-                               "Ganancia laptop (precio − costo)",
-                               "Excedente (cobrado − precio)",
-                               "Total ingreso Perú"]
-                st.dataframe(agg, hide_index=True, width="stretch")
-                st.caption(
-                    "Ganancia laptop = precio_laptop − r6 · "
-                    "r6 incluye USD×1.18×(tc+0.05) + S/20 envío + S/50 comisión → "
-                    "ganancia_laptop ya es neto para Porlles."
-                )
 
 
 # ── Error display ─────────────────────────────────────────────────────────────

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm -f \"C:/Users/leona/AppData/Local/Temp/claude/c--Users-leona-OneDrive-Escritorio-dashboard-rendimiento/5a0f925d-1a1e-4c61-b675-2bb6f8528a6d/scratchpad/\"*.py && echo \"temp limpiado\")"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\leona\\AppData\\Local\\Temp\\claude\\c--Users-leona-OneDrive-Escritorio-dashboard-rendimiento\\5a0f925d-1a1e-4c61-b675-2bb6f8528a6d\\scratchpad"
+    ]
+  }
+}

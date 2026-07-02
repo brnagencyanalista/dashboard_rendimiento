@@ -11,8 +11,7 @@ import pandas as pd
 import etl_ventas
 import etl_whaticket
 from transforms import (
-    agregar_ganancia_laptop, construir_resumen_meses,
-    construir_resumen_completo, filtrar_meses,
+    agregar_ganancia_laptop, construir_resumen, construir_resumen_completo,
 )
 from components import (
     CSS,
@@ -164,6 +163,7 @@ def main() -> None:
     # ── Sección 3: Atención de leads ──────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown('<div class="section-lbl">Atención de leads</div>', unsafe_allow_html=True)
+    df_atencion = pd.DataFrame()
     try:
         # Filtrado en memoria por los filtros del panel lateral
         df_asig_f = etl_whaticket.filtrar_detalle(
@@ -180,22 +180,18 @@ def main() -> None:
     except Exception as e:
         show_error("Error en análisis de atención", e)
 
-    # ── Tabla resumen única (ventas + atención) · abril · mayo · junio ─────────
+    # ── Tabla resumen única (ventas + atención) · según filtros ───────────────
     st.markdown("<br>", unsafe_allow_html=True)
     try:
-        df_res_meses = construir_resumen_meses(df_v, df_l, meses=(4, 5, 6))
-        df_v_meses   = filtrar_meses(df_v, meses=(4, 5, 6))
+        # Todo se construye desde los datos YA filtrados → la tabla cambia
+        # según el rango de fechas y la asesora seleccionada.
+        df_res      = construir_resumen(df_filt, df_lfilt)
+        df_res_full = construir_resumen_completo(df_res, df_atencion)
 
-        # Atención (leads) del MISMO periodo abril→junio, para unir en la tabla
-        anio_meses = int(pd.to_datetime(
-            df_v["fecha_efectiva_venta"], errors="coerce").dt.year.max())
-        asig_meses = filtrar_meses(df_asig_base, (4, 5, 6), anio_meses, "createdAt")
-        rev_meses  = filtrar_meses(df_rev_base,  (4, 5, 6), anio_meses, "firstSentMessageAt")
-        df_aten_meses = etl_whaticket.resumen_from(asig_meses, rev_meses)
-
-        df_res_full = construir_resumen_completo(df_res_meses, df_aten_meses)
-        render_tabla_resumen(df_res_full, df_v=df_v_meses,
-                             subtitulo="Periodo abril → junio")
+        sub = f"{fi:%d/%m/%Y} → {ff:%d/%m/%Y}"
+        if ase:
+            sub += f" · {ase}"
+        render_tabla_resumen(df_res_full, subtitulo=sub)
     except Exception as e:
         show_error("Error en tabla resumen", e)
 
